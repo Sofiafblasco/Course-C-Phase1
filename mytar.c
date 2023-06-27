@@ -50,15 +50,15 @@
 #define XHDTYPE						'x'  // Extended header referring to the next file in the archive
 #define XGLTYPE						'g'  // Global extended header
 
+/* Value for magic field for a tar file*/
+#define TAR_MAGIC "ustar  \0"
+
 /*
  * GLOBAL VARIABLES
  */
-typedef struct header
-{
-    union
-    {
-        struct
-		{
+typedef struct header {
+    union {
+        struct {
 			char name[100];             // file name
 			char mode[8];               // permissions
 			char uid[8];                // user id (octal)
@@ -81,8 +81,7 @@ typedef struct header
 	 struct header * next;
 } header_t;
 
-typedef struct file 
-{
+typedef struct file {
 	char *name;
 	char *data;
 	size_t sizeData;
@@ -92,7 +91,6 @@ typedef struct file
 /*
  * FUNCTIONS PROTOTYPES
  */
-bool isUnknownOptionFound(char *inputArgs[], int numInputArgs);
 header_t *createHeader();
 file_t *createFile(char *file_name);
 file_t *createFileWithData(char *file_name, char *buffer, size_t dataSize);
@@ -104,9 +102,11 @@ void printNameFilesExtracted(file_t *list);
 bool isZeroBlock(header_t *header);
 int countBytesToSkip(header_t *header);
 int findFile(char *file_name, header_t *list);
+bool isFileInsideTar(char *file_name, file_t *filesInsideArchive);
 void sortFileList(file_t **ptrFilesFound) ;
 void orderFilesIndex(char *argv[], int argc);
 int checkTruncatedFile(FILE *tarArchive);
+bool isTarFile(char *magicField);
 void freeList(header_t *list);
 void freeFileList(file_t *list);
 
@@ -131,25 +131,26 @@ file_t *createFile(char * file_name) {
 }
 
 file_t *createFileWithData(char *file_name, char *buffer, size_t dataSize) {
+	//printf("file: %s\n", file_name);
+	//printf("tamaño del buffer: %lu\n", sizeof(buffer));
+	//printf("dataSize:%lu\n", dataSize);
 	file_t *new = NULL;
 	new = (file_t *) malloc(sizeof(file_t));
 	new->name = (char *)malloc(strlen(file_name) + 1);
 	strcpy(new->name, file_name);
 	new->data = malloc(dataSize);
-    memcpy(new->data, buffer, dataSize);
+	memcpy(new->data, buffer, dataSize);
 	new->next=NULL;
 	new->sizeData = dataSize;
 	return new;
 }
 
 header_t *addHeader(header_t *list, header_t *new) {
-	if(list == NULL) 
+	if (list == NULL) 
 		list = new;
-	else
-	{
+	else {
 		header_t *aux = list;
-		while(aux->next != NULL)
-		{
+		while(aux->next != NULL) {
 			aux = aux -> next;
 		}
 		aux->next = new;
@@ -158,13 +159,11 @@ header_t *addHeader(header_t *list, header_t *new) {
 }
 
 file_t *addFile(file_t *listFiles, file_t *new) {
-	if(listFiles == NULL) 
+	if (listFiles == NULL) 
 		listFiles = new;
-	else
-	{
+	else {
 		file_t *aux = listFiles;
-		while(aux->next != NULL)
-		{
+		while (aux->next != NULL) {
 			aux = aux->next;
 		}
 		aux->next = new;
@@ -174,17 +173,16 @@ file_t *addFile(file_t *listFiles, file_t *new) {
 
 void printNameHeaders(header_t *list) {
 	header_t *aux = list;
-	while(aux!= NULL)
-	{
+	while (aux!= NULL) {
 		printf("%s\n", aux->name);
 		aux = aux->next;
  	}
 }
 
+/* TODO: Structure function --> is rare */
 void printNameFiles(file_t *listFiles, int filesNotFoundCount) {
     file_t *aux = listFiles;
-    while (aux != NULL) 
-	{
+	while (aux != NULL) {
         if (filesNotFoundCount > 0) 
 			fprintf(stderr, "%s\n", aux->name);
 		else 
@@ -195,36 +193,30 @@ void printNameFiles(file_t *listFiles, int filesNotFoundCount) {
 
 void printNameFilesExtracted(file_t *list) {
 	file_t *aux = list;
-	while(aux!= NULL)
-	{
+	while(aux!= NULL) {
 		printf("%s\n", aux->name);
 		aux = aux->next;
  	}
 }
 
-
 bool isZeroBlock(header_t *header) {
 	header_t allZeroHeader;
 	memset(&allZeroHeader, 0, BLOCKSIZE_BYTES);
-
-	if (memcmp(&allZeroHeader, header, BLOCKSIZE_BYTES) == 0) 
+	if (memcmp(&allZeroHeader, header, BLOCKSIZE_BYTES) == 0) {
 		return true;
+	}
 	return false;
 }
 
 int countBytesToSkip(header_t *header) {
 	long int contentSize = strtol(header->size, NULL, OCTAL_BASE);
 	long int bytesToSkip = 0;
-
-	if (contentSize > 0)
-	{
-		if (contentSize > BLOCKSIZE_BYTES)
-		{
+	if (contentSize > 0) {
+		if (contentSize > BLOCKSIZE_BYTES) {
 			bytesToSkip = (contentSize/BLOCKSIZE_BYTES) * BLOCKSIZE_BYTES;
 			if ((contentSize % BLOCKSIZE_BYTES) != 0)
 				bytesToSkip = ((contentSize/BLOCKSIZE_BYTES) * BLOCKSIZE_BYTES) + BLOCKSIZE_BYTES;
-		}
-		else if (contentSize <= BLOCKSIZE_BYTES)
+		} else if (contentSize <= BLOCKSIZE_BYTES)
 			bytesToSkip = BLOCKSIZE_BYTES;
 	}
 	return bytesToSkip;
@@ -232,104 +224,179 @@ int countBytesToSkip(header_t *header) {
 
 int findFile(char *file_name, header_t *list) {
 	header_t *aux = list;
-	while (aux != NULL)
-	{
-		if(strcmp(file_name, aux->name) == 0) 
+	while (aux != NULL) {
+		if (strcmp(file_name, aux->name) == 0) 
 			return 1;
 		aux = aux->next;
 	}
 	return 0;
 }
 
+long int getBytesToRead(char *file_name, header_t *list) {
+	header_t *aux = list;
+	long int bytesToSkip = 0;
+	while (aux != NULL) {
+		if (strcmp(file_name, aux->name) == 0) 
+		{
+			long int bytesToSkip = countBytesToSkip(aux);
+			return bytesToSkip;
+		}
+		aux = aux->next;
+	}
+	return bytesToSkip;
+}
+
+bool isFileInsideTar(char *fileName, file_t *filesInsideArchive) {
+	file_t *aux = filesInsideArchive;
+	while (aux != NULL) {
+		if(strcmp(fileName, aux->name) == 0)
+			return true;
+		aux = aux->next;
+	}
+	return false;
+}
+
 void sortFileList(file_t **ptrFilesFound) {
-    if (*ptrFilesFound == NULL || (*ptrFilesFound)->next == NULL) 
-        return;
+	if (*ptrFilesFound == NULL || (*ptrFilesFound)->next == NULL) 
+		return;
 
-    file_t *current = *ptrFilesFound;
-    while (current != NULL) 
-	{
-        file_t *minNode = current;
-        file_t *temp = current->next;
+	file_t *current = *ptrFilesFound;
+	while (current != NULL) {
+		file_t *minNode = current;
+		file_t *temp = current->next;
+		while (temp != NULL) {
+			if (strcmp(temp->name, minNode->name) < 0) 
+				minNode = temp;
+			temp = temp->next;
+		}
 
-        while (temp != NULL) 
-		{
-            if (strcmp(temp->name, minNode->name) < 0) 
-                minNode = temp;
-            temp = temp->next;
-        }
-
-        if (minNode != current) 
-		{
-            char* tempName = current->name;
-            current->name = minNode->name;
-            minNode->name = tempName;
-        }
-	
-        current = current->next;
-    }
+		if (minNode != current) {
+			char *tempName = current->name;
+			current->name = minNode->name;
+			minNode->name = tempName;
+		}
+		current = current->next;
+	}
 }
 
 int checkTruncatedFile(FILE *tarArchive) {
 	long int currentPosition = ftell(tarArchive);
-    fseek(tarArchive, 0, SEEK_END);
-    long int fileSize = ftell(tarArchive);
-    fseek(tarArchive, currentPosition, SEEK_SET);
-
-    if (currentPosition > fileSize) 
-	{
-        return -1;
+	fseek(tarArchive, 0, SEEK_END);
+	long int fileSize = ftell(tarArchive);
+	fseek(tarArchive, currentPosition, SEEK_SET);
+	if (currentPosition > fileSize) {
+		return -1;
 	}
 	return 0;
 }
 
-void freeList(header_t *list) {
-    header_t *current = list;
-    while (current != NULL) 
+bool isTarFile(char *magicField) {
+	if (strcmp(magicField, TAR_MAGIC) == 0)
 	{
-        header_t *next = current->next;
-        free(current);
-        current = next;
-    }
+		return true;
+	}
+	return false;
 }
 
-void freeFileList(file_t *list) 
-{
-    file_t *current = list;
-    while (current != NULL) 
-	{
-        file_t *next = current->next;
-        free(current);
-        current = next;
-    }
+/*
+file_t *getFile(char *fileName, file_t *filesInsideArchive) {
+	file_t *aux = filesInsideArchive;
+	while (aux != NULL) {
+		if (strcmp(fileName, aux->name) == 0) {
+			printf("Antes de malloc para crear el file foundFile para crear un file llamado: %s\n", fileName);
+			printf("Sizeof(file): %lu\n", sizeof(aux));
+			printf("Sizeof(name): %lu\n", sizeof(aux->name));
+			printf("nameSize con strlen: %lu\n", strlen(aux->name));
+			printf("Sizeof(data): %lu\n", sizeof(aux->data));
+			
+			file_t *foundFile = NULL;
+			printf("Antes de malloc para el nombre del foundFile\n");
+			//foundFile->name = (char*)malloc(strlen(aux->name) + 1);
+			foundFile->name = (char*)malloc(8);
+
+			printf("Antes de malloc para los datos del foundFile\n");
+			foundFile->data = (char*)malloc(strlen(aux->data) + 1);
+			printf("Despues de malloc para los datos del foundFile\n");
+
+			if (foundFile->name != NULL && foundFile->data != NULL) {
+				strcpy(foundFile->name, aux->name);
+				printf("Antes de guardar los datos\n");
+				memcpy(foundFile->data, aux->data, strlen(aux->data) + 1);
+				printf("Despues de guardar los datos\n");
+			} else {
+				// Manejo del error de asignación de memoria
+				printf("Error al asignar memoria para foundFile->name o foundFile->data\n");
+			}
+
+			foundFile->sizeData = aux->sizeData;
+			foundFile->next = NULL;
+			return foundFile;
+		}
+		aux = aux->next;
+	}
+	return NULL;
 }
+*/
+
+
+
+file_t *getFile(char *fileName, file_t *filesInsideArchive) {
+	file_t *aux = filesInsideArchive;
+	while (aux != NULL) {
+		if (strcmp(fileName, aux->name) == 0) {
+			file_t *foundFile = createFileWithData(fileName, aux->data, aux->sizeData);
+			return foundFile;
+		}
+		aux = aux->next;
+	}
+	return NULL;
+}
+
+
+void freeList(header_t *list) {
+	header_t *current = list;
+	while (current != NULL) {
+		header_t *next = current->next;
+		free(current);
+		current = next;
+	}
+}
+
+void freeFileList(file_t *list) {
+	file_t *current = list;
+	while (current != NULL) {
+		file_t *next = current->next;
+		free(current);
+		current = next;
+	}
+}
+
+/* TODO: Structuring code into functions to make it more readable */
+/* TODO: Correct formatting */
 
 int main(int argc, char *argv[])
 {
 	if (argc < MIN_NUM_OF_ARGUMENTS)
 		exit(ERROR_CODE_TWO);
-    int f = 0;
-    int t = 0;
+
+	int f = 0;
+	int t = 0;
 	int v = 0;
 	int x = 0;
- 	char *tarArchiveName = NULL;
+	char *tarArchiveName = NULL;
 	char **fileNamesArgs = NULL;
 	int numFileNamesArgs = 0;
     
-    for (int i = 1; i < argc; i++) 
-    {
-		if (argv[i][0] == '-')
-		{
-			switch (argv[i][1])
-			{
+	for (int i = 1; i < argc; i++) {
+		if (argv[i][0] == '-') {
+			switch (argv[i][1]) {
 			case 'f':
 				f = 1;
-				if(strncmp(argv[i+1], "-", 1) != 0)
-				{
+				if (strncmp(argv[i+1], "-", 1) != 0) {
 					tarArchiveName = argv[i+1];
 					i++; 
 				}
-				else
-				{
+				else {
 					printf(MSG_PREFFIX " option requires an argument -- 'f'\n"
 						"Try './mytar --help' or './mytar --usage' for more information.\n");
 					exit(ERROR_CODE_TWO);
@@ -351,147 +418,133 @@ int main(int argc, char *argv[])
 			default:
 				printf(MSG_PREFFIX " Unknown option: %s\n", argv[i]);
 				exit(ERROR_CODE_TWO);
-       		}
-		} else if (f && t && x)
-        {
-            printf(MSG_PREFFIX " You must specify one of the '-Acdtrux', '--delete' or '--test-label' options\n"
+			}
+		} else if (f && t && x) {
+			printf(MSG_PREFFIX " You must specify one of the '-Acdtrux', '--delete' or '--test-label' options\n"
 				"Try 'tar --help' or 'tar --usage' for more information.\n");
 			exit(ERROR_CODE_TWO);
-        } else if (f || t || v || x)
-		{
+		} else if (f || t || v || x) {
 			fileNamesArgs = realloc(fileNamesArgs, (numFileNamesArgs + 1) * sizeof(char *));
-            fileNamesArgs[numFileNamesArgs] = argv[i];
-            numFileNamesArgs++;
+			fileNamesArgs[numFileNamesArgs] = argv[i];
+			numFileNamesArgs++;
 		}
-		else
-		{
+		else {
 			printf(MSG_PREFFIX " You must specify one of the '-Acdtrux', '--delete' or '--test-label' options\n"
 				"Try 'tar --help' or 'tar --usage' for more information.\n");
 			exit(ERROR_CODE_TWO);
 		}
-    }
+	}
 	FILE * tarArchive = NULL;
 	int filesFoundCount = 0;
 	int filesNotFoundCount = 0;
-	file_t * filesFound = NULL;
-	file_t * filesNotFound = NULL;
+	file_t *filesFound = NULL;
+	file_t *filesNotFound = NULL;
 	int numOptions = f + t + v + x;
-	file_t * filesInsideArchive = NULL;
+	file_t *filesInsideArchive = NULL;
+	bool isFileTruncated = false;
 
-	if(v)
-	{
-		if(!x || t) v = 0;
-		if(numOptions == 1)
-		{
+	if (v) {
+		if (!x || t) 
+			v = 0;
+		if (numOptions == 1) {
 			printf(MSG_PREFFIX " You must specify one of the '-Acdtrux', '--delete' or '--test-label' options\n"
 				"Try 'tar --help' or 'tar --usage' for more information.\n");
 			exit(ERROR_CODE_TWO);
 		}
 	}
 
-	if (f && argc == 2)
-	{
-
+	if (f && argc == 2) {
 		printf(MSG_PREFFIX " option requires an argument -- 'f'\n"
 				"Try './mytar --help' or './mytar --usage' for more information.\n");
 		exit(ERROR_CODE_TWO);
-	} else if ((t && argc == 2) || (x && argc == 2))
-	{
+	} else if ((t && argc == 2) || (x && argc == 2)) {
 		printf(MSG_PREFFIX " Refusing to read archive contents from terminal (missing -f option?)\n"
 				MSG_PREFFIX " Error is not recoverable: exiting now\n");
 		exit(ERROR_CODE_TWO);
-	} else if (f && t)
-    {
-        tarArchive = fopen(tarArchiveName, "r");
+	} else if (f && t) {
+		tarArchive = fopen(tarArchiveName, "r");
+		if (tarArchive == NULL) {
+			printf(MSG_PREFFIX " %s file does not exist in current directory\n", argv[2]);
+			exit(ERROR_CODE_TWO);
+		}
 
-        if (tarArchive == NULL)
-        {
-            printf(MSG_PREFFIX " %s file does not exist in current directory\n", argv[2]);
-            exit(ERROR_CODE_TWO);
-        }
-    
 		header_t * list = NULL;
 		int posZeroBlock = 1;
 		bool isLoneZeroBlock = false;
 
-		while(1)
-		{
+		while (1) {
 			header_t *new_header = createHeader();
 			size_t element_read = fread((new_header->block), sizeof(new_header->block), 1, tarArchive);
 
 			if (element_read != 1)
 				break;
 
-			if (isZeroBlock(new_header) == true)
-			{
-				if (fread((new_header->block), sizeof(new_header->block), 1, tarArchive) != 1)
-				{
+			if (isZeroBlock(new_header) == true) {
+				if (fread((new_header->block), sizeof(new_header->block), 1, tarArchive) != 1) {
 					posZeroBlock ++;
 					isLoneZeroBlock = true;
 				}
 				break;
 			}
 
-			if ((new_header->typeflag != REGTYPE) &&
-				new_header->typeflag != AREGTYPE)
+			if (isTarFile(new_header->magic) == false)
 			{
+				printf(MSG_PREFFIX " This does not look like a tar archive\n");
+				printf(MSG_PREFFIX " Exiting with failure status due to previous errors\n");
+				exit(ERROR_CODE_TWO);
+			}
+
+			if ((new_header->typeflag != REGTYPE) &&
+				new_header->typeflag != AREGTYPE) {
 				printf(MSG_PREFFIX " Unsupported header type: %d\n", new_header->typeflag);
 				exit(ERROR_CODE_TWO);
 			}
 
 			list = addHeader(list, new_header);
 
-			long int bytesToSkip = countBytesToSkip(new_header);;
+			long int bytesToSkip = countBytesToSkip(new_header);
 			fseek(tarArchive, bytesToSkip, SEEK_CUR);
-
-			while (bytesToSkip > 0)
-			{
+			
+			while (bytesToSkip > 0) {
 				bytesToSkip -= BLOCKSIZE_BYTES;
 				posZeroBlock++;
 			}
-
-			if (checkTruncatedFile(tarArchive) == -1)
-			{
+			
+			if (checkTruncatedFile(tarArchive) == -1) {
 				printf("%s\n", new_header->name);
 				printf(MSG_PREFFIX " Unexpected EOF in archive\n");
 				printf(MSG_PREFFIX " Error is not recoverable: exiting now\n");
 				exit(ERROR_CODE_TWO);
 			}
 		}
-    	fclose(tarArchive);
+		fclose(tarArchive);
 
-		if (numFileNamesArgs == 0) printNameHeaders(list);
-		else
-		{
-			for (int i = 0; i < numFileNamesArgs; i++) 
-			{
-   				char* fileName = fileNamesArgs[i];
-				if (findFile(fileName, list) == 1)
-				{
+		if (numFileNamesArgs == 0) 
+			printNameHeaders(list);
+		else {
+			for (int i = 0; i < numFileNamesArgs; i++) {
+				char* fileName = fileNamesArgs[i];
+				if (findFile(fileName, list) == 1) {
 					file_t *new_file = createFile(fileName);
 					filesFound = addFile(filesFound, new_file);
 					filesFoundCount++;
 				}
-				else
-				{
+				else {
 					file_t *new_file = createFile(fileName);
 					filesNotFound = addFile(filesNotFound, new_file);
 					filesNotFoundCount++;
 				}
 			}
 		
-			if (filesFoundCount > 0)
-			{
+			if (filesFoundCount > 0) {
 				file_t **ptrFilesFound = &filesFound;
 				sortFileList(ptrFilesFound);
 				printNameFiles(filesFound, filesNotFoundCount);
 			}
 			
-			if (filesNotFoundCount > 0)
-			{
+			if (filesNotFoundCount > 0) {
 				file_t *current = filesNotFound;
-				while (current != NULL) 
-				{
+				while (current != NULL) {
 					fprintf(stderr, MSG_PREFFIX " %s: Not found in archive\n", current->name);
 					current = current->next;
 				}
@@ -504,17 +557,15 @@ int main(int argc, char *argv[])
 			printf(MSG_PREFFIX " A lone zero block at %d\n", posZeroBlock);
 
 		freeList(list);
+		free(fileNamesArgs);
 		freeFileList(filesFound);
 		freeFileList(filesNotFound);
 	}
 
-	if(x)
-	{
-		if(numFileNamesArgs == 0)		//extract All --> Se descomprime un archivo entero
-		{
+	if (x) {
+		if (numFileNamesArgs == 0) {
 			tarArchive = fopen(tarArchiveName, "r");
-			if (tarArchive == NULL)
-			{
+			if (tarArchive == NULL) {
 				printf(MSG_PREFFIX " %s file does not exist in current directory\n", argv[2]);
 				exit(ERROR_CODE_TWO);
 			}
@@ -523,17 +574,14 @@ int main(int argc, char *argv[])
 			int posZeroBlock = 1;
 			bool isLoneZeroBlock = false;
 
-			while (1) 
-			{
+			while (1) {
 				header_t *new_header = createHeader();
 				size_t element_read = fread((new_header->block), sizeof(new_header->block), 1, tarArchive);
 				if (element_read != 1)
 					break;
 
-				if (isZeroBlock(new_header) == true)
-				{
-					if(fread((new_header->block), sizeof(new_header->block), 1, tarArchive) != 1)
-					{
+				if (isZeroBlock(new_header) == true) {
+					if (fread((new_header->block), sizeof(new_header->block), 1, tarArchive) != 1) {
 						posZeroBlock ++;
 						isLoneZeroBlock = true;
 					}
@@ -541,47 +589,47 @@ int main(int argc, char *argv[])
 				}
 
 				if ((new_header->typeflag != REGTYPE) &&
-					new_header->typeflag != AREGTYPE)
-				{
+					new_header->typeflag != AREGTYPE) {
 					printf(MSG_PREFFIX " Unsupported header type: %d\n", new_header->typeflag);
+					exit(ERROR_CODE_TWO);
+				}
+
+				if (isTarFile(new_header->magic) == false) {
+					printf(MSG_PREFFIX " This does not look like a tar archive\n");
+					printf(MSG_PREFFIX " Exiting with failure status due to previous errors\n");
 					exit(ERROR_CODE_TWO);
 				}
 
 				list = addHeader(list, new_header);
 
-				long int bytesToSkip = countBytesToSkip(new_header);
-				char* buffer = (char*)malloc(bytesToSkip);
-				size_t bytesRead = fread(buffer, sizeof(char), bytesToSkip, tarArchive); //Se guarda en un buffer los bytesLeidos (datos del fichero)
-				/* No se como se detectaría un error en fread porq los bytesRead es un valores distinto dependiendo del tamaño de los datos
-				if (bytesRead == 0)
-				{
-					printf("Error al leer los datos de un fichero\n");
-					break;
-				}
-				*/
+
+				long int bytesToRead = countBytesToSkip(new_header);
+				
+				char *buffer = (char*)malloc(bytesToRead);
+				size_t bytesRead = fread(buffer, sizeof(char), bytesToRead, tarArchive);
 				file_t *new_file = createFileWithData(new_header->name, buffer, bytesRead);
+				free(buffer);
+
 				filesInsideArchive = addFile(filesInsideArchive, new_file);
 
-				while (bytesToSkip > 0)
-				{
-					bytesToSkip -= BLOCKSIZE_BYTES;
-					posZeroBlock++;
+				if ((size_t)bytesToRead > bytesRead)
+					fseek(tarArchive, (bytesToRead - bytesRead), SEEK_CUR);
+
+				if (checkTruncatedFile(tarArchive) == -1) {
+					isFileTruncated = true;
+					if(v)
+						fprintf(stderr, "%s\n", new_header->name);
 				}
 
-				if (checkTruncatedFile(tarArchive) == -1)
-				{
-					printf("%s\n", new_header->name);
-					printf(MSG_PREFFIX " Unexpected EOF in archive\n");
-					printf(MSG_PREFFIX " Error is not recoverable: exiting now\n");
-					exit(ERROR_CODE_TWO);
+				while (bytesToRead > 0) {
+					bytesToRead -= BLOCKSIZE_BYTES;
+					posZeroBlock++;
 				}
 			}
 			fclose(tarArchive);
 			
-
 			file_t *currentFile = filesInsideArchive;
-			while (currentFile != NULL) 
-			{
+			while (currentFile != NULL) {
 				char *fileName = currentFile->name;
 				char *fileData = currentFile->data;
 				size_t fileSizeData = currentFile->sizeData;
@@ -597,18 +645,134 @@ int main(int argc, char *argv[])
 				currentFile = currentFile->next;
 			}
 
-			if(isLoneZeroBlock == true)
+			if (isFileTruncated == true)
+			{
+				printf(MSG_PREFFIX " Unexpected EOF in archive\n");
+				printf(MSG_PREFFIX " Error is not recoverable: exiting now\n");
+				exit(ERROR_CODE_TWO);
+			}
+
+			if (v) {
+				printNameFilesExtracted(filesInsideArchive);
+				if (isLoneZeroBlock == true)
+					printf(MSG_PREFFIX " A lone zero block at %d\n", posZeroBlock);
+				
+			}
+			else {
+				if (isLoneZeroBlock == true)
+					printf(MSG_PREFFIX " A lone zero block at %d\n", posZeroBlock);
+			}
+		} 
+		else {
+			tarArchive = fopen(tarArchiveName, "r");
+			if (tarArchive == NULL) {
+				printf(MSG_PREFFIX " %s file does not exist in current directory\n", argv[2]);
+				exit(ERROR_CODE_TWO);
+			}
+
+			header_t *list = NULL;
+			int posZeroBlock = 1;
+			bool isLoneZeroBlock = false;
+
+			while (1) {
+				header_t *new_header = createHeader();
+				size_t element_read = fread((new_header->block), sizeof(new_header->block), 1, tarArchive);
+				if (element_read != 1)
+					break;
+
+				if (isZeroBlock(new_header) == true) {
+					if(fread((new_header->block), sizeof(new_header->block), 1, tarArchive) != 1) {
+						posZeroBlock ++;
+						isLoneZeroBlock = true;
+					}
+					break;
+				}
+
+				if ((new_header->typeflag != REGTYPE) &&
+					new_header->typeflag != AREGTYPE) {
+					printf(MSG_PREFFIX " Unsupported header type: %d\n", new_header->typeflag);
+					exit(ERROR_CODE_TWO);
+				}
+
+				list = addHeader(list, new_header);
+
+				long int bytesToSkip = countBytesToSkip(new_header);
+				char *buffer = (char*)malloc(bytesToSkip);
+				size_t bytesRead = fread(buffer, sizeof(char), bytesToSkip, tarArchive);
+				file_t *new_file = createFileWithData(new_header->name, buffer, bytesRead);
+				free(buffer);
+
+				filesInsideArchive = addFile(filesInsideArchive, new_file);
+
+				if ((size_t)bytesToSkip > bytesRead)
+					fseek(tarArchive, (bytesToSkip - bytesRead), SEEK_CUR);
+				
+				if (checkTruncatedFile(tarArchive) == -1) {
+					printf("%s\n", new_header->name);
+					fprintf(stderr, MSG_PREFFIX " Unexpected EOF in archive\n");
+					fprintf(stderr, MSG_PREFFIX " Error is not recoverable: exiting now\n");
+					exit(ERROR_CODE_TWO);
+				}
+
+				while (bytesToSkip > 0) {
+					bytesToSkip -= BLOCKSIZE_BYTES;
+					posZeroBlock++;
+				}
+			}
+			fclose(tarArchive);
+			
+			for (int i = 0; i < numFileNamesArgs; i++) {
+				file_t *fileWanted = NULL;
+				char *fileName = fileNamesArgs[i];
+
+				if (findFile(fileName, list) == 1) {
+					FILE *newFile = fopen(fileName, "w");
+					
+					fileWanted = getFile(fileName, filesInsideArchive);
+					
+					fwrite(fileWanted->data, sizeof(char), fileWanted->sizeData, newFile);
+					fclose(newFile);
+
+					filesFound = addFile(filesFound, fileWanted);
+					filesFoundCount++;
+				} 
+				else { 
+					file_t *new_file = createFile(fileName);
+					filesNotFound = addFile(filesNotFound, new_file);
+					filesNotFoundCount++;	
+				}
+			}
+
+			if (isLoneZeroBlock == true)
 				printf(MSG_PREFFIX " A lone zero block at %d\n", posZeroBlock);
 
-			if(v)
-			{
-				printNameFilesExtracted(filesInsideArchive);
-				if(isLoneZeroBlock == true)
+			if (v) {
+				if (filesFoundCount > 0) {
+					file_t **ptrFilesFound = &filesFound;
+					sortFileList(ptrFilesFound);
+					printNameFilesExtracted(filesFound);
+				}
+				
+				if (filesNotFoundCount > 0) {
+					file_t *current = filesNotFound;
+					while (current != NULL) {
+						fprintf(stderr, MSG_PREFFIX " %s: Not found in archive\n", current->name);
+						current = current->next;
+					}
+					fprintf(stderr, MSG_PREFFIX " Exiting with failure status due to previous errors\n");
+					exit(ERROR_CODE_TWO);
+				}
+
+				freeList(list);
+				free(fileNamesArgs);
+				freeFileList(filesInsideArchive);
+				freeFileList(filesFound);
+				freeFileList(filesNotFound);
+
+				if (isLoneZeroBlock == true)
 					printf(MSG_PREFFIX " A lone zero block at %d\n", posZeroBlock);
 			}
 		}
-		// else extractFiles()
 	}
-	
 	return 0;
 }
