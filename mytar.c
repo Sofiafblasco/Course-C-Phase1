@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <assert.h>
+#include <err.h>
 
 /*
  * MACROS
@@ -111,7 +113,7 @@ void printNameHeaders(header_t *list);
 void printNameFiles(file_t *listFiles, int filesNotFoundCount);
 void printNameFilesExtracted(file_t *list);
 bool isZeroBlock(header_t *header);
-int countBytesToSkip(header_t *header);
+size_t countBytesToSkip(header_t *header);
 int findFile(char *fileName, header_t *list);
 bool isFileInsideTar(char *fileName, file_t *filesInsideArchive);
 void sortFileList(file_t **ptrFilesFound);
@@ -119,59 +121,38 @@ void orderFilesIndex(char *argv[], int argc);
 int checkTruncatedFile(FILE *tarArchive);
 bool isTarFile(char *magicField);
 file_t *getFile(char *fileName, file_t *filesInsideArchive);
-void freeList(header_t *list);
-void freeFileList(file_t *list);
+void freeList(void *list, int dataType);
+void *xmalloc(size_t len);
 
 /*
  * FUNCTIONS
  */
 
 header_t *createHeader() {
-	header_t *new = NULL;
-	new = (header_t *) malloc(sizeof (header_t));
-	if (new == NULL) {
-		free(new);
-		exit(EXIT_FAILURE);
-	}
+	header_t *new = xmalloc(sizeof (header_t));
 	new->next = NULL;
 	return (new);
 }
 
 file_t *createFile(char *fileName) {
-	file_t * new = NULL;
-	new = (file_t *) malloc(sizeof (file_t));
+	file_t *new = xmalloc(sizeof (file_t));
 	if (new == NULL) {
 		free(new);
 		exit(EXIT_FAILURE);
 	}
-	new->name = (char *)malloc(strlen(fileName) + 1);
-	if (new->name == NULL) {
-		free(new->name);
-		exit(EXIT_FAILURE);
-	}
+	char *name = xmalloc(strlen(fileName) + 1);
+	new->name = name;
 	strcpy(new->name, fileName);
 	new->next = NULL;
 	return (new);
 }
 
 file_t *createFileWithData(char *fileName, char *buffer, size_t dataSize) {
-	file_t *new = NULL;
-	new = (file_t *) malloc(sizeof (file_t));
-	if (new == NULL) {
-		free(new);
-		exit(EXIT_FAILURE);
-	}
-	new->name = (char *)malloc(strlen(fileName) + 1);
-	if (new->name == NULL) {
-		free(new->name);
-		exit(EXIT_FAILURE);
-	}
+	file_t *new = xmalloc(sizeof (file_t));
+	char *name = xmalloc(strlen(fileName) + 1);
+	new->name = name;
 	strcpy(new->name, fileName);
 	new->data = malloc(dataSize);
-	if (new->data == NULL) {
-		free(new->data);
-		exit(EXIT_FAILURE);
-	}
 	memcpy(new->data, buffer, dataSize);
 	new->next = NULL;
 	new->sizeData = dataSize;
@@ -246,9 +227,9 @@ bool isZeroBlock(header_t *header) {
 	return (false);
 }
 
-int countBytesToSkip(header_t *header) {
-	long int contentSize = strtol(header->size, NULL, OCTAL_BASE);
-	long int bytesToSkip = 0;
+size_t countBytesToSkip(header_t *header) {
+	size_t contentSize = strtol(header->size, NULL, OCTAL_BASE);
+	size_t bytesToSkip = 0;
 	if (contentSize > 0) {
 		if (contentSize > BLOCKSIZE_BYTES) {
 			bytesToSkip = (contentSize/BLOCKSIZE_BYTES)
@@ -272,13 +253,13 @@ int findFile(char *fileName, header_t *list) {
 	return (0);
 }
 
-long int getBytesToRead(char *fileName, header_t *list) {
+size_t getBytesToRead(char *fileName, header_t *list) {
 	header_t *aux = list;
-	long int bytesToSkip = 0;
+	size_t bytesToSkip = 0;
 	while (aux != NULL) {
 		if (strcmp(fileName, aux->name) == 0)
 		{
-			long int bytesToSkip = countBytesToSkip(aux);
+			size_t bytesToSkip = countBytesToSkip(aux);
 			return (bytesToSkip);
 		}
 		aux = aux->next;
@@ -351,22 +332,38 @@ file_t *getFile(char *fileName, file_t *filesInsideArchive) {
 	return (NULL);
 }
 
-void freeList(header_t *list) {
-	header_t *current = list;
-	while (current != NULL) {
-		header_t *next = current->next;
-		free(current);
-		current = next;
+/*
+ * note on the input argument dataType:
+ * dataType = 1 --> header_t
+ * dataType = 2 --> file_t
+ */
+void freeList(void *list, int dataType) {
+	if (dataType == 1) {
+		header_t *current = list;
+		while (current != NULL) {
+			header_t *next = current->next;
+			free(current);
+			current = next;
+		}
+	} else if (dataType == 2) {
+		file_t *current = list;
+		while (current != NULL) {
+			file_t *next = current->next;
+			free(current);
+			current = next;
+		}
+	} else {
+		printf("Invalid dataType\n");
 	}
 }
 
-void freeFileList(file_t *list) {
-	file_t *current = list;
-	while (current != NULL) {
-		file_t *next = current->next;
-		free(current);
-		current = next;
-	}
+void *xmalloc(size_t len)
+{
+	assert(len != 0);
+	void *buf;
+	if ((buf = malloc(len)) == NULL)
+		err(1, "failed to allocate %zu bytes", len);
+	return (buf);
 }
 
 int main(int argc, char *argv[]) {
@@ -433,6 +430,7 @@ int main(int argc, char *argv[]) {
 			exit(ERROR_CODE_TWO);
 		}
 	}
+
 	FILE * tarArchive = NULL;
 	int filesFoundCount = 0;
 	int filesNotFoundCount = 0;
@@ -441,6 +439,7 @@ int main(int argc, char *argv[]) {
 	int numOptions = f + t + v + x;
 	file_t *filesInsideArchive = NULL;
 	bool isFileTruncated = false;
+	header_t * list = NULL;
 
 	if (v) {
 		if (!x || t)
@@ -453,7 +452,12 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-	if (f && argc == 2) {
+	if (numOptions == 0) {
+		printf(MSG_PREFFIX " You must specify one of the '-Acdtrux',"
+				" '--delete' or '--test-label' options\n"
+				"Try 'tar --help' or 'tar --usage' for more information.\n");
+			exit(ERROR_CODE_TWO);
+	} else if (f && argc == 2) {
 		printf(MSG_PREFFIX " option requires an argument -- 'f'\n"
 				"Try './mytar --help' or './mytar --usage' for more"
 				" information.\n");
@@ -471,7 +475,6 @@ int main(int argc, char *argv[]) {
 			exit(ERROR_CODE_TWO);
 		}
 
-		header_t * list = NULL;
 		int posZeroBlock = 1;
 		bool isLoneZeroBlock = false;
 
@@ -493,6 +496,8 @@ int main(int argc, char *argv[]) {
 					posZeroBlock ++;
 					isLoneZeroBlock = true;
 				}
+				if (ferror(tarArchive))
+					exit(EXIT_FAILURE);
 				break;
 			}
 
@@ -512,7 +517,7 @@ int main(int argc, char *argv[]) {
 
 			list = addHeader(list, newHeader);
 
-			long int bytesToSkip = countBytesToSkip(newHeader);
+			size_t bytesToSkip = countBytesToSkip(newHeader);
 			fseek(tarArchive, bytesToSkip, SEEK_CUR);
 			while (bytesToSkip > 0) {
 				bytesToSkip -= BLOCKSIZE_BYTES;
@@ -566,11 +571,6 @@ int main(int argc, char *argv[]) {
 		if (isLoneZeroBlock == true)
 			printf(MSG_PREFFIX " A lone zero block at %d\n",
 					posZeroBlock);
-
-		freeList(list);
-		free(fileNamesArgs);
-		freeFileList(filesFound);
-		freeFileList(filesNotFound);
 	}
 
 	if (x) {
@@ -585,6 +585,7 @@ int main(int argc, char *argv[]) {
 			header_t *list = NULL;
 			int posZeroBlock = 1;
 			bool isLoneZeroBlock = false;
+			bool isEmptyFile = false;
 
 			while (1) {
 				header_t *newHeader = createHeader();
@@ -604,6 +605,8 @@ int main(int argc, char *argv[]) {
 						posZeroBlock ++;
 						isLoneZeroBlock = true;
 					}
+					if (ferror(tarArchive))
+						exit(EXIT_FAILURE);
 					break;
 				}
 
@@ -625,27 +628,33 @@ int main(int argc, char *argv[]) {
 				list = addHeader(list, newHeader);
 
 
-				long int bytesToRead = countBytesToSkip(newHeader);
+				size_t bytesToRead = countBytesToSkip(newHeader);
+				if (bytesToRead == 0)
+					isEmptyFile = true;
 
-				char *buffer = (char *)malloc(bytesToRead);
-				if (buffer == NULL) {
+				if (!isEmptyFile) {
+					char *buffer = xmalloc(bytesToRead);
+
+					size_t bytesRead = fread(buffer, sizeof (char), bytesToRead,
+										tarArchive);
+					if (ferror(tarArchive)) {
+						free(buffer);
+						exit(EXIT_FAILURE);
+					}
+					file_t *newFile = createFileWithData(newHeader->name, buffer,
+										bytesRead);
 					free(buffer);
-					exit(EXIT_FAILURE);
-				}
-				size_t bytesRead = fread(buffer, sizeof (char), bytesToRead,
-									tarArchive);
-				if (ferror(tarArchive)) {
-					free(buffer);
-					exit(EXIT_FAILURE);
-				}
-				file_t *newFile = createFileWithData(newHeader->name, buffer,
-									bytesRead);
-				free(buffer);
 
-				filesInsideArchive = addFile(filesInsideArchive, newFile);
+					filesInsideArchive = addFile(filesInsideArchive, newFile);
 
-				if ((size_t)bytesToRead > bytesRead)
+					if (bytesToRead > bytesRead)
 					fseek(tarArchive, (bytesToRead - bytesRead), SEEK_CUR);
+				} else {
+					file_t *emptyFile = createFile(newHeader->name);
+					filesInsideArchive = addFile(filesInsideArchive, emptyFile);
+					isEmptyFile = false;
+
+				}
 
 				if (checkTruncatedFile(tarArchive) == -1) {
 					isFileTruncated = true;
@@ -711,6 +720,7 @@ int main(int argc, char *argv[]) {
 			header_t *list = NULL;
 			int posZeroBlock = 1;
 			bool isLoneZeroBlock = false;
+			bool isEmptyFile = false;
 
 			while (1) {
 				header_t *newHeader = createHeader();
@@ -730,6 +740,8 @@ int main(int argc, char *argv[]) {
 						posZeroBlock ++;
 						isLoneZeroBlock = true;
 					}
+					if (ferror(tarArchive))
+						exit(EXIT_FAILURE);
 					break;
 				}
 
@@ -742,27 +754,32 @@ int main(int argc, char *argv[]) {
 
 				list = addHeader(list, newHeader);
 
-				long int bytesToSkip = countBytesToSkip(newHeader);
-				char *buffer = (char *)malloc(bytesToSkip);
-				if (buffer == NULL) {
+				size_t bytesToSkip = countBytesToSkip(newHeader);
+
+				if (bytesToSkip == 0)
+					isEmptyFile = true;
+
+				if (!isEmptyFile) {
+					char *buffer = xmalloc(bytesToSkip);
+					size_t bytesRead = fread(buffer, sizeof (char), bytesToSkip, tarArchive);
+					if (ferror(tarArchive)) {
+						free(buffer);
+						exit(EXIT_FAILURE);
+					}
+					file_t *newFile = createFileWithData(newHeader->name, buffer,
+										bytesRead);
 					free(buffer);
-					exit(EXIT_FAILURE);
+
+					filesInsideArchive = addFile(filesInsideArchive, newFile);
+
+					if (bytesToSkip > bytesRead)
+						fseek(tarArchive, (bytesToSkip - bytesRead), SEEK_CUR);
+
+				} else {
+					file_t *emptyFile = createFile(newHeader->name);
+					filesInsideArchive = addFile(filesInsideArchive, emptyFile);
+					isEmptyFile = false;
 				}
-				size_t bytesRead = fread(buffer, sizeof (char),
-									bytesToSkip, tarArchive);
-				if (ferror(tarArchive)) {
-					free(buffer);
-					exit(EXIT_FAILURE);
-				}
-
-				file_t *newFile = createFileWithData(newHeader->name, buffer,
-													bytesRead);
-				free(buffer);
-
-				filesInsideArchive = addFile(filesInsideArchive, newFile);
-
-				if ((size_t)bytesToSkip > bytesRead)
-					fseek(tarArchive, (bytesToSkip - bytesRead), SEEK_CUR);
 
 				if (checkTruncatedFile(tarArchive) == -1) {
 					printf("%s\n", newHeader->name);
@@ -783,7 +800,6 @@ int main(int argc, char *argv[]) {
 			for (int i = 0; i < numFileNamesArgs; i++) {
 				file_t *fileWanted = NULL;
 				char *fileName = fileNamesArgs[i];
-
 				if (findFile(fileName, list) == 1) {
 					FILE *newFile = fopen(fileName, "w");
 
@@ -800,7 +816,6 @@ int main(int argc, char *argv[]) {
 						}
 					}
 					fclose(newFile);
-
 					filesFound = addFile(filesFound, fileWanted);
 					filesFoundCount++;
 				} else {
@@ -833,18 +848,15 @@ int main(int argc, char *argv[]) {
 					exit(ERROR_CODE_TWO);
 				}
 
-				freeList(list);
-				free(fileNamesArgs);
-				freeFileList(filesInsideArchive);
-				freeFileList(filesFound);
-				freeFileList(filesNotFound);
-
 				if (isLoneZeroBlock == true)
 					printf(MSG_PREFFIX " A lone zero block at %d\n",
 							posZeroBlock);
 			}
 		}
 	}
-
+	freeList(list, 1);
+	freeList(filesFound, 2);
+	freeList(filesNotFound, 2);
+	free(fileNamesArgs);
 	return (0);
 }
