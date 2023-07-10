@@ -96,8 +96,6 @@ typedef struct header {
 
 typedef struct file {
 	char *name;
-	char *data;
-	size_t sizeData;
 	struct file *next;
 } file_t;
 
@@ -115,6 +113,7 @@ void printNameFilesTruncated(file_t *list);
 bool isZeroBlock(header_t *header);
 size_t countBytesToSkip(header_t *header);
 int findFile(char *fileName, header_t *list);
+int findFileExtracted(char *fileName, file_t *list);
 void sortFileList(file_t **ptrFilesFound);
 int checkTruncatedFile(FILE *tarArchive);
 bool isTarFile(char *magicField);
@@ -235,6 +234,16 @@ size_t countBytesToSkip(header_t *header) {
 
 int findFile(char *fileName, header_t *list) {
 	header_t *aux = list;
+	while (aux != NULL) {
+		if (strcmp(fileName, aux->name) == 0)
+			return (1);
+		aux = aux->next;
+	}
+	return (0);
+}
+
+int findFileExtracted(char *fileName, file_t *list) {
+	file_t *aux = list;
 	while (aux != NULL) {
 		if (strcmp(fileName, aux->name) == 0)
 			return (1);
@@ -546,8 +555,6 @@ int main(int argc, char *argv[]) {
 			}
 
 			header_t *list = NULL;
-			file_t *listFilesExtracted = NULL;
-			file_t *listFilesTruncated = NULL;
 			int posZeroBlock = 1;
 			bool isLoneZeroBlock = false;
 
@@ -703,57 +710,12 @@ int main(int argc, char *argv[]) {
 					exit(ERROR_CODE_TWO);
 				}
 
-				list = addHeader(list, newHeader);
-				size_t bytesToSkip = countBytesToSkip(newHeader);
-				fseek(tarArchive, bytesToSkip, SEEK_CUR);
-
-				while(bytesToSkip > 0) {
-					bytesToSkip -= BLOCKSIZE_BYTES;
-				}
-			}
-
-
-			for (int i = 0; i < numFileNamesArgs; i++) {
-				char *fileName = fileNamesArgs[i];
-				if (findFile(fileName, list) == 1) {
-					file_t *fileFound = createFile(fileName);
-					filesFound = addFile(filesFound, fileFound);
-					filesFoundCount++;
-				} else {
-					file_t *fileNotFound = createFile(fileName);
-					filesNotFound = addFile(filesNotFound, fileNotFound);
-					filesNotFoundCount++;
-				}
-			}
-
-			while (1) {
-				header_t *newHeader = createHeader();
-				size_t element_read = fread((newHeader->block),
-									sizeof (newHeader->block), 1, tarArchive);
-				if (ferror(tarArchive)) {
-					free(newHeader);
-					exit(EXIT_FAILURE);
-				}
-
-				if (element_read != 1)
-					break;
-
-				if (isZeroBlock(newHeader) == true) {
-					if (fread((newHeader->block),
-						sizeof (newHeader->block), 1, tarArchive) != 1) {
-						posZeroBlock ++;
-						isLoneZeroBlock = true;
-					}
-					if (ferror(tarArchive))
-						exit(EXIT_FAILURE);
-					break;
-				}
-
 				size_t bytesToRead = countBytesToSkip(newHeader);
 
-				while (filesFound != NULL) {
-					char *fileName = filesFound->name;
-					if (strcmp(fileName, newHeader->name)) {
+				for (int i = 0; i < numFileNamesArgs; i++) {
+					char *fileName = fileNamesArgs[i];
+					if (strcmp(fileName, newHeader->name) == 0 
+						&& findFileExtracted(fileName, listFilesExtracted) == 0) {
 						if (bytesToRead == 0)
 							extractEmptyFile(newHeader->name);
 						else {
@@ -761,8 +723,8 @@ int main(int argc, char *argv[]) {
 							if (newFile == NULL) {
 								printf("Error creating the file: %s\n", newHeader->name);
 							} else {
+								char *buffer = xmalloc(BLOCKSIZE_BYTES);
 								while (bytesToRead > 0) {
-									char *buffer = xmalloc(BLOCKSIZE_BYTES);
 									size_t bytesRead = fread(buffer, sizeof (char), BLOCKSIZE_BYTES,
 														tarArchive);
 									if (ferror(tarArchive)) {
@@ -785,23 +747,22 @@ int main(int argc, char *argv[]) {
 											exit(EXIT_FAILURE);
 										}
 									}
-									free(buffer);
 									bytesToRead -= bytesRead;
 									posZeroBlock++;
 								}
+								free(buffer);
 								fclose(newFile);
 							}
 						}
 						file_t *fileExtracted = createFile(newHeader->name);
 						listFilesExtracted = addFile(listFilesExtracted, fileExtracted);
-					} else {
-						fseek(tarArchive, bytesToRead, SEEK_CUR);
 					}
-					filesFound = filesFound->next;
 				}
+
+				if (findFileExtracted(newHeader->name, listFilesExtracted) == 0)
+					fseek(tarArchive, bytesToRead, SEEK_CUR);
 			}
 			fclose(tarArchive);
-			
 
 			if (isFileTruncated == true) {
 				if (v)
@@ -814,6 +775,18 @@ int main(int argc, char *argv[]) {
 			if (isLoneZeroBlock == true)
 				printf(MSG_PREFFIX " A lone zero block at %d\n",
 						posZeroBlock);
+
+			for (int i = 0; i < numFileNamesArgs; i++) {
+				if (findFileExtracted(fileNamesArgs[i], listFilesExtracted) == 1) {
+					file_t *fileFound = createFile(fileNamesArgs[i]);
+					filesFound = addFile(filesFound, fileFound);
+					filesFoundCount++;
+				} else {
+					file_t *fileNotFound = createFile(fileNamesArgs[i]);
+					filesNotFound = addFile(filesNotFound, fileNotFound);
+					filesNotFoundCount++;
+				}
+			}
 
 			if (v) {
 				if (filesFoundCount > 0) {
